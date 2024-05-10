@@ -72,30 +72,35 @@ void setup() {
   Wire.endTransmission();
 }
 
+int lastInterval = 0;
+int interval = 1000;
+
 void loop() {
-  float humidityDht = dht.readHumidity();     
-  float temperatureDht = dht.readTemperature(); 
-  int valorAnalogico = analogRead(pinSensorUV);
-  int percentualUV = map(valorAnalogico, 0, 1023, 0, 100);
-  float luminosidade = lerLuminosidade();
-  TCA9548A(3);
-  float temperatureBmp = bmp.readTemperature();
-  float pressureBmp = bmp.readPressure();
-  float altitudeBmp = bmp.readAltitude(1013.25);
+  if(millis() - lastInterval > interval ){
+    lastInterval = millis();
 
-  DHT22Serial(humidityDht, temperatureDht);
-  UVSerial(valorAnalogico, percentualUV);
-  luminosidadeSerial(luminosidade);
-  BMP280Serial(temperatureBmp, pressureBmp, altitudeBmp);
+    float humidityDht = dht.readHumidity();     
+    float temperatureDht = dht.readTemperature(); 
+    int valorAnalogico = analogRead(pinSensorUV);
+    int percentualUV = map(valorAnalogico, 0, 1023, 0, 100);
+    float luminosidade = lerLuminosidade();
+    
+    TCA9548A(3);
+    float temperatureBmp = bmp.readTemperature();
+    float pressureBmp = bmp.readPressure();
+    float altitudeBmp = bmp.readAltitude(1013.25);
 
-  limpaResultado();
-  desenhaPrimeiraPagina(humidityDht, temperatureDht, temperatureBmp, pressureBmp, altitudeBmp);
+    DHT22Serial(humidityDht, temperatureDht);
+    UVSerial(valorAnalogico, percentualUV);
+    luminosidadeSerial(luminosidade);
+    BMP280Serial(temperatureBmp, pressureBmp, altitudeBmp);
 
-  delay(1000); // Aguarda 2 segundos antes da próxima leitura
+    limpaResultado();
+    desenhaPrimeiraPagina(temperatureDht, temperatureBmp, humidityDht, pressureBmp, altitudeBmp);
+  }
 }
 
 void DHT22Serial(float humidity, float temperature){
-  
   if (isnan(humidity) || isnan(temperature)) {
     Serial.println("Erro ao ler o sensor DHT22!");
   }
