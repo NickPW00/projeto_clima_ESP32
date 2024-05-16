@@ -173,17 +173,10 @@ void pluviometroSerial(int valorDigital, float mediaContagemMin) {
   double mlTotais = contagemGeral * MEDIDA_BASCULA;
   double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
 
-  Serial.print("Pluviometro -> ");
-  Serial.print("Basculadas: ");
-  Serial.print(contagemGeral);
-  Serial.print(" | mL Totais: ");
-  Serial.print(mlTotais);
-  Serial.print(" | ml Por Min: ");
-  Serial.print(mlMedioPorMin);
-  Serial.print(" | L/m2 Totais: ");
-  Serial.print(medidaLporM2());
-  Serial.print(" | ContagemSec ");
-  Serial.println(contagemSec);
+  comumSerial("Pluviometro", "Basculas", contagemGeral, "", false, true, false);
+  comumSerial("", "ml Totais", mlTotais, "ml", true, false, false);
+  comumSerial("", "L/m2 Totais", medidaLporM2(), "L/m2", true, false, false);
+  comumSerial("", "Basculas por sec", contagemSec, "", false, false, true);
 }
 
 float lerLuminosidade() {
@@ -199,7 +192,7 @@ float lerLuminosidade() {
     }
 }
 
-// Pluviometro
+// Pluviometro /////////////////////////////////////////////////////////////////
 void modificarContagem(int valorDigital){
   if (valorDigital == LOW && !reedSwitchAtivado) contagemSegura();
   else if (valorDigital == HIGH) reedSwitchAtivado = false;
@@ -241,45 +234,25 @@ void limpaResultado() {
 }
 
 void desenhaPrimeiraPagina(float temperature1, float temperature2, float humidity, float pressure, float altitude) {
-    desenhaTemperatura(temperature1, temperature2);
-    desenhaUmidade(humidity);
-    desenhaAltitude(altitude);
-    desenhaPressao(pressure);
+  drawSensorData("Temp.:", temperature2 > 100 ? temperature1 : temperature2, "C", 1, false);
+  drawSensorData("Hum.:", humidity, "%", 2, false);
+  drawSensorData("Alt.:", altitude, "m", 3, false);
+  drawSensorData("Press.:", pressure, "Pa", 4, true);
 }
 
-void desenhaTemperatura(float temperature1, float temperature2) {
-    tft.drawRoundRect(10, 10, 105, 105, 10, temperature2 > 100 ? (isnan(temperature1) ? RED : YELLOW) : CYAN);
-    tft.setCursor(20, 20);
-    tft.println("Temp.:");
-    tft.setCursor(20, 60);
-    tft.print(temperature2 > 100 ? temperature1 : temperature2);
-    tft.print("C");
-}
-
-void desenhaUmidade(float humidity) {
-    tft.drawRoundRect(125, 10, 105, 105, 10, isnan(humidity) ? RED : CYAN);
-    tft.setCursor(135, 20);
-    tft.println("Hum.:");
-    tft.setCursor(135, 60);
-    tft.print(humidity);
-    tft.print(" %");
-}
-
-void desenhaAltitude(int altitude) {
-    tft.drawRoundRect(125, 125, 105, 105, 10, isnan(altitude) ? RED : CYAN);
-    tft.setCursor(135, 135);
-    tft.println("Alt.:");
-    tft.setCursor(135, 175);
-    tft.print(altitude);
-    tft.println(" m.");
-}
-
-void desenhaPressao(float pressure) {
-    tft.drawRoundRect(10, 125, 105, 105, 10, isnan(pressure) ? RED : CYAN);
-    tft.setCursor(20, 135);
-    tft.println("Press.:");
-    tft.setCursor(15, 175);
-    tft.print(pressure, 1);
-    tft.setCursor(40, 195);
-    tft.print("Pa");
+void drawSensorData(const char* sensorName, float sensorValue, const char* unit, int tela, bool ultrapassa) {
+    int x; int y;
+    if(tela == 1){x = 10; y = 10;}
+    if(tela == 2){x = 125; y = 10;}
+    if(tela == 3){x = 10; y = 125;}
+    if(tela == 4){x = 125; y = 125;}
+    tft.drawRoundRect(x, y, 105, 105, 10, isnan(sensorValue) ? RED : CYAN);
+    tft.setCursor(x + 10, y + 10);
+    tft.print(sensorName);
+    tft.setCursor(x + 10, y + 60);
+    tft.print(sensorValue);
+    if(ultrapassa){
+      tft.setCursor(x + 10, y + 80);
+    }
+    tft.print(unit);
 }
