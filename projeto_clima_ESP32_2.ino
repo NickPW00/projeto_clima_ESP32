@@ -7,7 +7,6 @@
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BMP280.h>
-#include <string> // Inclui a biblioteca string
 
 // Definições de cores
 #define BLACK    0x0000
@@ -154,7 +153,7 @@ void BMP280Serial(float temperature, float pressure, float altitude){
   comumSerial("", "Altitude aprox.", altitude, "m (Metros)", true, false, true);
 }
 
-void comumSerial(std::string nomeSensor, std::string nomeMedida, float medida, std::string sinalMedida, bool temSinal, bool ehPrimeiro, bool ehUltimo){
+void comumSerial(char* nomeSensor, char* nomeMedida, float medida, char* sinalMedida, bool temSinal, bool ehPrimeiro, bool ehUltimo){
   if(ehPrimeiro){
     Serial.print(F(nomeSensor.c_str()));
     Serial.print(F(" -> "));
