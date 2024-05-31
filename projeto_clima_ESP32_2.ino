@@ -14,9 +14,9 @@
 #include <ArduinoJson.h>
 
 // WiFi Configuration
-const char* ssid = "Hermes";
-const char* password = "Dionisio401";
-const char* serverName = "http://192.168.0.202:8080/api/medicao";
+const char* ssid = "";
+const char* password = "";
+const char* serverName = "";
 
 // Client NTP Configuration
 WiFiUDP ntpUDP;
