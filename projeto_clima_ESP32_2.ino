@@ -9,12 +9,18 @@
 #include <Adafruit_BMP280.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <TimeLib.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <ArduinoJson.h>
 
 // WiFi Configuration
-const char* ssid = "";
-const char* password = "";
-const char* serverName = "";
+const char* ssid = "Hermes";
+const char* password = "Dionisio401";
+const char* serverName = "http://192.168.0.202:8080/api/medicao";
+
+// Client NTP Configuration
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 
 // Definições de cores
 #define BLACK    0x0000
@@ -73,22 +79,30 @@ struct SensorReadings {
   int percentualUV;
 };
 
-
 // Function Declarations;
 void setupWiFi();
 void setupDisplay();
 void setupSensors();
 void displayReadings(SensorReadings readings);
 void sendReadingsToServer(SensorReadings readings);
-SensorReadings readSensors();
 String createJsonPayload(SensorReadings readings);
+SensorReadings readSensors();
+
+// botão
+int buttonPin = 25;
+int sla = 0;
+int buttonState = 0;       // Variável para armazenar o estado do botão
+bool functionExecuted = false;  // Variável de controle para verificar se a função já foi executada
 
 void setup() {
   Serial.begin(115200);
+  
+  pinMode(buttonPin, INPUT); // botão
 
   setupWiFi();
   setupDisplay();
   setupSensors();
+  timeClient.begin();
 }
 
 void setupWiFi(){
@@ -125,7 +139,8 @@ void setupSensors() {
   Wire.endTransmission();
 }
 
-unsigned long ultimoIntervalo = 0; 
+unsigned long ultimoIntervaloGeral = 0; 
+unsigned long ultimoIntervaloRequisicao = 0; 
 
 // Pluviometro
 int contagemGeral = 0; // A soma de quantas vezes foi lida a passagem do Basculante
@@ -134,36 +149,56 @@ int contagemSec = 0;
 bool reedSwitchAtivado = false;
 
 
+void loop() {
+  buttonState = digitalRead(buttonPin);  // Lê o estado do botão
+  int valorDigital = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
+  modificarContagem(valorDigital); // Sempre verifica caso o pluviometro for acionado
+
+  if(millis() - ultimoIntervaloGeral > 1000){
+    SensorReadings readings = readSensors();
+    displayReadings(readings);
+    if(millis() - ultimoIntervaloRequisicao > 600000){
+      sendReadingsToServer(readings);
+      ultimoIntervaloRequisicao = millis();
+    }
+    contagemSec = 0;
+    ultimoIntervaloGeral = millis();
+  }
+
+  if (buttonState == HIGH && !functionExecuted) { // Se o botão for pressionado e a função não foi executada
+    sla++;
+    functionExecuted = true;  // Marca que a função foi executada
+  }
+  else functionExecuted = false;
+}
+
 
 SensorReadings readSensors() {
   SensorReadings readings;
-
   readings.humidityDht = dht.readHumidity();
   readings.temperatureDht = dht.readTemperature();
   readings.valorAnalogico = analogRead(pinSensorUV);
   readings.percentualUV = map(readings.valorAnalogico, 0, 1023, 0, 100);
   readings.luminosidade = lerLuminosidade();
-
+  readings.mediaContagemMin = contarMlPorMinuto();
   TCA9548A(3);
   readings.temperatureBmp = bmp.readTemperature();
   readings.pressureBmp = bmp.readPressure();
   readings.altitudeBmp = bmp.readAltitude(1013.25);
-
-  readings.mediaContagemMin = contarMlPorMinuto();
-
   return readings;
 }
 
 void displayReadings(SensorReadings readings) {
   Serial.println("------------------------------");
-  DHT22Serial(readings.humidityDht, readings.temperatureDht);
-  UVSerial(readings.valorAnalogico, readings.percentualUV);
   luminosidadeSerial(readings.luminosidade);
+  UVSerial(readings.valorAnalogico, readings.percentualUV);
+  DHT22Serial(readings.humidityDht, readings.temperatureDht);
+  pluviometroSerial(readings.mediaContagemMin);
   BMP280Serial(readings.temperatureBmp, readings.pressureBmp, readings.altitudeBmp);
-  pluviometroSerial(digitalRead(PIN_PLUVIOMETRO), readings.mediaContagemMin);
 
   limpaResultado();
-  desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBmp, readings.humidityDht, readings.pressureBmp, readings.altitudeBmp);
+  if(sla % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBmp, readings.humidityDht, readings.pressureBmp, readings.altitudeBmp);
+  if(sla % 2 == 1) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
 }
 
 void sendReadingsToServer(SensorReadings readings) {
@@ -192,40 +227,38 @@ void sendReadingsToServer(SensorReadings readings) {
   }
 }
 
+String getFormattedTimestamp() {
+  timeClient.update();
+  unsigned long epochTime = timeClient.getEpochTime();
+  struct tm *ptm = gmtime((time_t *)&epochTime);
+  char timestamp[25];
+  snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+           ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
+           ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+  return String(timestamp);
+}
+
 String createJsonPayload(SensorReadings readings) {
-  // Formatando o timestamp no formato ISO 8601
-  String timestamp = String(year()) + "-" + String(month()) + "-" + String(day()) +
-                     "T" + String(hour()) + ":" + String(minute()) + ":" + String(second());
+  // Criando um objeto JSON com capacidade suficiente para os dados
+  StaticJsonDocument<256> doc;
 
-  // Construindo o JSON com os dados da leitura dos sensores
-  String json = "{";
-  json += "\"idEstacao\": \"XYZ123\",";
-  json += "\"timestamp\": \"" + timestamp + "\",";
-  json += "\"numeroMedicao\": 1,"; // Número sequencial da medição
-  json += "\"temperatura\": " + String(readings.temperatureDht, 2) + ",";
-  json += "\"umidade\": " + String(readings.humidityDht, 2) + ",";
-  json += "\"percentualUV\": " + String(readings.percentualUV) + ",";
-  json += "\"nivelUV\": " + String(readings.valorAnalogico) + ",";
-  json += "\"pressao\": " + String(readings.pressureBmp, 2) + ",";
-  json += "\"luminosidade\": " + String(readings.luminosidade, 2) + ",";
-  json += "\"mlChuva\": " + String(readings.mediaContagemMin, 2); // Quantidade de chuva em milímetros por minuto
-  json += "}";
-  return json;
+  // Preenchendo o objeto JSON com os dados
+  doc["idEstacao"] = "Teste Principal";
+  doc["timestamp"] = getFormattedTimestamp();
+  doc["numeroMedicao"] = 1;
+  doc["temperatura"] = readings.temperatureBmp;
+  doc["umidade"] = readings.humidityDht;
+  doc["percentualUV"] = readings.percentualUV;
+  doc["nivelUV"] = readings.valorAnalogico;
+  doc["pressao"] = readings.pressureBmp;
+  doc["luminosidade"] = readings.luminosidade;
+  doc["mlChuva"] = readings.mediaContagemMin;
+
+  // Convertendo o objeto JSON em uma string
+  String jsonString;
+  serializeJson(doc, jsonString);
+  return jsonString;
 }
-
-void loop() {
-  int valorDigital = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
-  modificarContagem(valorDigital); // Sempre verifica caso o pluviometro for acionado
-
-  if(millis() - ultimoIntervalo > 1000){
-    SensorReadings readings = readSensors();
-    displayReadings(readings);
-    sendReadingsToServer(readings);
-    contagemSec = 0;
-    ultimoIntervalo = millis();
-  }
-}
-
 
 void DHT22Serial(float humidity, float temperature){
   if (isnan(humidity) || isnan(temperature)) 
@@ -277,7 +310,7 @@ void comumSerial(char* nomeSensor, char* nomeMedida, float medida, char* sinalMe
   }
 }
 
-void pluviometroSerial(int valorDigital, float mediaContagemMin) {
+void pluviometroSerial(float mediaContagemMin) {
   double mlTotais = contagemGeral * MEDIDA_BASCULA;
   double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
 
@@ -346,6 +379,13 @@ void desenhaPrimeiraPagina(float temperature1, float temperature2, float humidit
   drawSensorData("Hum.:", humidity, "%", 2, false);
   drawSensorData("Alt.:", altitude, "m", 3, false);
   drawSensorData("Press.:", pressure, "Pa", 4, true);
+}
+void desenhaSegundaPagina(float luminosidade, float valorAnalogico, float percentualUV, float mediaContagemMin) {
+  // uv, luminosidade e pluviometro
+  drawSensorData("Lum.:", luminosidade, "lux", 1, true);
+  drawSensorData("UV.:", percentualUV, "%", 2, false);
+  drawSensorData("Bas.:", contagemGeral * MEDIDA_BASCULA, "ml", 3, false);
+  drawSensorData("ML/Min.:", mediaContagemMin, "ml/min", 4, true);
 }
 
 void drawSensorData(const char* sensorName, float sensorValue, const char* unit, int tela, bool ultrapassa) {
