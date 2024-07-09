@@ -16,7 +16,7 @@
 // WiFi Configuration
 const char* ssid = "";
 const char* password = "";
-const char* serverName = "";
+const char* serverName = "http://:8080/api/medicao";
 
 // Client NTP Configuration
 WiFiUDP ntpUDP;
@@ -48,8 +48,9 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 
 // Rain Gauge Configuration
 #define MEDIDA_BASCULA 7.54   // 7.54ml each time it's activated, 9cm diameter, 4.5cm radius, 63,585 cm2 , 0,118521 L/m2
-#define RAIO_PLUVIOMETRO 4.5 
+#define RAIO_PLUVIOMETRO 4.4
 #define TAMANHO_LISTA 60      // Define o tamanho da lista de contagens por sec do Pluviometro
+#define AREA_PLUVIOMETRO (RAIO_PLUVIOMETRO * RAIO_PLUVIOMETRO * PI)
 
 // Object Declarations
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); // Display 
@@ -90,15 +91,13 @@ SensorReadings readSensors();
 
 // botão
 int buttonPin = 25;
-int sla = 0;
+int botaoAcionado = 0;
 int buttonState = 0;       // Variável para armazenar o estado do botão
 bool functionExecuted = false;  // Variável de controle para verificar se a função já foi executada
 
 void setup() {
   Serial.begin(115200);
-  
   pinMode(buttonPin, INPUT); // botão
-
   setupWiFi();
   setupDisplay();
   setupSensors();
@@ -148,7 +147,6 @@ int ultimaContagemGeral = 0;
 int contagemSec = 0; 
 bool reedSwitchAtivado = false;
 
-
 void loop() {
   buttonState = digitalRead(buttonPin);  // Lê o estado do botão
   int valorDigital = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
@@ -166,7 +164,7 @@ void loop() {
   }
 
   if (buttonState == HIGH && !functionExecuted) { // Se o botão for pressionado e a função não foi executada
-    sla++;
+    botaoAcionado++;
     functionExecuted = true;  // Marca que a função foi executada
   }
   else functionExecuted = false;
@@ -197,8 +195,21 @@ void displayReadings(SensorReadings readings) {
   BMP280Serial(readings.temperatureBmp, readings.pressureBmp, readings.altitudeBmp);
 
   limpaResultado();
-  if(sla % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBmp, readings.humidityDht, readings.pressureBmp, readings.altitudeBmp);
-  if(sla % 2 == 1) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
+  if(botaoAcionado % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBmp, readings.humidityDht, readings.pressureBmp, readings.altitudeBmp);
+  if(botaoAcionado % 2 == 1) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
+}
+
+void serialSendReadingsToServer(int httpResponseCode, HTTPClient &http){
+  if (httpResponseCode > 0) {
+      Serial.print("Código de Resposta HTTP: ");
+      Serial.println(httpResponseCode);
+      String payload = http.getString();
+      Serial.println("Resposta do servidor:");
+      Serial.println(payload);
+    } else {
+      Serial.print("Erro na solicitação HTTP: ");
+      Serial.println(httpResponseCode);
+    }
 }
 
 void sendReadingsToServer(SensorReadings readings) {
@@ -211,16 +222,8 @@ void sendReadingsToServer(SensorReadings readings) {
 
     int httpResponseCode = http.POST(httpRequestData);
 
-    if (httpResponseCode > 0) {
-      Serial.print("Código de Resposta HTTP: ");
-      Serial.println(httpResponseCode);
-      String payload = http.getString();
-      Serial.println("Resposta do servidor:");
-      Serial.println(payload);
-    } else {
-      Serial.print("Erro na solicitação HTTP: ");
-      Serial.println(httpResponseCode);
-    }
+    serialSendReadingsToServer(httpResponseCode, http);
+    
     http.end();
   } else {
     Serial.println("Desconectado do WiFi");
@@ -286,84 +289,100 @@ void BMP280Serial(float temperature, float pressure, float altitude){
   comumSerial("", "Altitude aprox.", altitude, "m (Metros)", true, false, true);
 }
 
-void comumSerial(char* nomeSensor, char* nomeMedida, float medida, char* sinalMedida, bool temSinal, bool ehPrimeiro, bool ehUltimo) {
-  if(ehPrimeiro) {
+void comumSerial(const char* nomeSensor, const char* nomeMedida, float medida, const char* sinalMedida, bool temSinal, bool ehPrimeiro, bool ehUltimo) {
+  if (ehPrimeiro) {
     Serial.print(nomeSensor);
     Serial.print(F(" -> "));
   }
+
   Serial.print(nomeMedida);
   Serial.print(F(": "));
   Serial.print(medida);
+
+  if (temSinal) {
+    Serial.print(sinalMedida);
+  }
+
   if (ehUltimo) {
-    if (temSinal) {
-      Serial.println(sinalMedida);
-    } else {
-      Serial.println();
-    }
+    Serial.println();
   } else {
-    if (temSinal) {
-      Serial.print(sinalMedida);
-      Serial.print(F(" | "));
-    } else {
-      Serial.print(F(" | "));
-    }
+    Serial.print(F(" | "));
   }
 }
 
 void pluviometroSerial(float mediaContagemMin) {
   double mlTotais = contagemGeral * MEDIDA_BASCULA;
   double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
+  float mmTotais = mmPorM2();
 
   comumSerial("Pluviometro", "Basculas", contagemGeral, "", false, true, false);
   comumSerial("", "ml Totais", mlTotais, "ml", true, false, false);
-  comumSerial("", "L/m2 Totais", medidaLporM2(), "L/m2", true, false, false);
+  comumSerial("", "L/m2 Totais", mmTotais, "L/m2", true, false, false);
   comumSerial("", "Basculas por sec", contagemSec, "", false, false, true);
 }
 
 float lerLuminosidade() {
-    TCA9548A(1);
-    Wire.requestFrom(BH1750_ADDR, 2);
-    if (Wire.available() >= 2) {
-        uint16_t valor = Wire.read() << 8 | Wire.read();
-        float luminosidade = valor / 1.2; 
-        return luminosidade;
-    } else {
-        Serial.println("Erro ao ler o sensor BH1750");
-        return -1.0; 
-    }
+  TCA9548A(1);
+  Wire.requestFrom(BH1750_ADDR, 2);
+  if (Wire.available() >= 2) {
+      uint16_t valor = Wire.read() << 8 | Wire.read();
+      float luminosidade = valor / 1.2; 
+      return luminosidade;
+  } else {
+      Serial.println("Erro ao ler o sensor BH1750");
+      return -1.0; 
+  }
 }
 
 // Pluviometro /////////////////////////////////////////////////////////////////
-void modificarContagem(int valorDigital){
-  if (valorDigital == LOW && !reedSwitchAtivado) contagemSegura();
-  else if (valorDigital == HIGH) reedSwitchAtivado = false;
+unsigned long intervalo2 = 0;
+void modificarContagem(int valorDigital) {
+  if (valorDigital == LOW && reedSwitchAtivado == false) {
+    Serial.println("Caso 1.2");
+    contagemSegura();
+    intervalo2 = millis();
+  } else if (valorDigital == HIGH) {
+    reedSwitchAtivado = false;
+  }
 }
 
-void contagemSegura(){
-  if(contagemGeral == ultimaContagemGeral) somasContagem(); // Caso seja posta mais parametros para serem somados. Seguro pois não haverá 2 contagens ao mesmo tempo
-  else ultimaContagemGeral = contagemGeral;
+// Função para garantir uma contagem segura, evitando duplicações
+void contagemSegura() {
+  if (contagemGeral == ultimaContagemGeral) {
+    somasContagem();
+    Serial.println("Caso 2.1");
+  } else {
+    Serial.println("Caso 2.2");
+    ultimaContagemGeral = contagemGeral;
+  }
   reedSwitchAtivado = true;
 }
 
-void somasContagem(){
+// Função para somar as contagens
+void somasContagem() {
   contagemGeral++;
   contagemSec++;
 }
 
-float contarMlPorMinuto(){
+// Função para calcular a média de ml por minuto
+float contarMlPorMinuto() {
   float soma = 0;
-  float mediaTotal;
-  listaDeContagemSec[indiceInsercao] = contagemSec; 
+  listaDeContagemSec[indiceInsercao] = contagemSec;
   indiceInsercao = (indiceInsercao + 1) % TAMANHO_LISTA;
-  for (int i = 0; i < TAMANHO_LISTA; i++) soma += listaDeContagemSec[i];
-  return mediaTotal = soma / TAMANHO_LISTA;
+
+  for (int i = 0; i < TAMANHO_LISTA; i++) {
+    soma += listaDeContagemSec[i];
+  }
+
+  contagemSec = 0; // Reset contagemSec depois de calcular a média
+
+  return soma / TAMANHO_LISTA;
 }
 
-float medidaLporM2() {
-  float areaPluviometroM2 = (PI * RAIO_PLUVIOMETRO * RAIO_PLUVIOMETRO) / 10000.0; // convertendo cm² para m²
-  float medidaBasculaemM3 = MEDIDA_BASCULA * 1e-6; // transformando mL em m³
-  float quantidadeDeAguaPorM2 = medidaBasculaemM3 / areaPluviometroM2;
-  return quantidadeDeAguaPorM2;
+// Função para calcular a quantidade de chuva em mm por m²
+float mmPorM2() {
+  float mmPorM2 = MEDIDA_BASCULA / AREA_PLUVIOMETRO;
+  return contagemGeral * mmPorM2;
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -380,8 +399,8 @@ void desenhaPrimeiraPagina(float temperature1, float temperature2, float humidit
   drawSensorData("Alt.:", altitude, "m", 3, false);
   drawSensorData("Press.:", pressure, "Pa", 4, true);
 }
+
 void desenhaSegundaPagina(float luminosidade, float valorAnalogico, float percentualUV, float mediaContagemMin) {
-  // uv, luminosidade e pluviometro
   drawSensorData("Lum.:", luminosidade, "lux", 1, true);
   drawSensorData("UV.:", percentualUV, "%", 2, false);
   drawSensorData("Bas.:", contagemGeral * MEDIDA_BASCULA, "ml", 3, false);
