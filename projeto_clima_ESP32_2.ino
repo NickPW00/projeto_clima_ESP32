@@ -16,7 +16,7 @@
 // WiFi Configuration
 const char* ssid = "";
 const char* password = "";
-const char* serverName = "http://:8080/api/medicao";
+const char* serverName = "";
 
 // Client NTP Configuration
 WiFiUDP ntpUDP;
@@ -52,6 +52,10 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 #define TAMANHO_LISTA 60      // Define o tamanho da lista de contagens por sec do Pluviometro
 #define AREA_PLUVIOMETRO (RAIO_PLUVIOMETRO * RAIO_PLUVIOMETRO * PI)
 
+// Deep Sleep Configuration
+#define uS_TO_S_FACTOR 1000000 /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  510       /* Time ESP32 will go to sleep (in seconds) */
+
 // Object Declarations
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); // Display 
 DHT dht(DHTPIN, DHTTYPE);                                       // DHT22 Sensor
@@ -60,6 +64,7 @@ Adafruit_BMP280 bmp;                                            // BMP280 Sensor
 // Valiables Declarations
 int listaDeContagemSec[TAMANHO_LISTA]; // Lista de Contagem de quantas medições por sec do Pluviometro
 int indiceInsercao = 0;                // Qual espaço do array de contagem que será preenchida e lida consecutiva
+RTC_DATA_ATTR int bootCount = 0;
 
 // Complexador 
 void TCA9548A(uint8_t id) {
@@ -84,6 +89,7 @@ struct SensorReadings {
 void setupWiFi();
 void setupDisplay();
 void setupSensors();
+void print_wakeup_reason();
 void displayReadings(SensorReadings readings);
 void sendReadingsToServer(SensorReadings readings);
 String createJsonPayload(SensorReadings readings);
@@ -97,6 +103,8 @@ bool functionExecuted = false;  // Variável de controle para verificar se a fun
 
 void setup() {
   Serial.begin(115200);
+  delay(1000); // Deixa a estação acordar direitinho :D
+  setupDeepSleep();
   pinMode(buttonPin, INPUT); // botão
   setupWiFi();
   setupDisplay();
@@ -138,6 +146,27 @@ void setupSensors() {
   Wire.endTransmission();
 }
 
+void setupDeepSleep() {
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+  print_wakeup_reason();
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) + " Seconds");
+}
+
+void print_wakeup_reason() {
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0:     Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1:     Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER:    Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP:      Serial.println("Wakeup caused by ULP program"); break;
+    default:                        Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason); break;
+  }
+}
+
 unsigned long ultimoIntervaloGeral = 0; 
 unsigned long ultimoIntervaloRequisicao = 0; 
 
@@ -155,9 +184,12 @@ void loop() {
   if(millis() - ultimoIntervaloGeral > 1000){
     SensorReadings readings = readSensors();
     displayReadings(readings);
-    if(millis() - ultimoIntervaloRequisicao > 600000){
+    if(millis() - ultimoIntervaloRequisicao > 90000){
       sendReadingsToServer(readings);
       ultimoIntervaloRequisicao = millis();
+      Serial.println("Going to sleep now");
+      Serial.flush();
+      esp_deep_sleep_start();
     }
     contagemSec = 0;
     ultimoIntervaloGeral = millis();
@@ -350,9 +382,7 @@ void modificarContagem(int valorDigital) {
 void contagemSegura() {
   if (contagemGeral == ultimaContagemGeral) {
     somasContagem();
-    Serial.println("Caso 2.1");
   } else {
-    Serial.println("Caso 2.2");
     ultimaContagemGeral = contagemGeral;
   }
   reedSwitchAtivado = true;
