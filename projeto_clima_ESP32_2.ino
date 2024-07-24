@@ -6,7 +6,7 @@
 #include <DHT.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BMP280.h>
+#include <Adafruit_BME280.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
@@ -59,7 +59,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 // Object Declarations
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); // Display 
 DHT dht(DHTPIN, DHTTYPE);                                       // DHT22 Sensor
-Adafruit_BMP280 bmp;                                            // BMP280 Sensor
+Adafruit_BME280 bme;                                            // BME280 Sensor
 
 // Valiables Declarations
 int listaDeContagemSec[TAMANHO_LISTA]; // Lista de Contagem de quantas medições por sec do Pluviometro
@@ -77,9 +77,10 @@ struct SensorReadings {
   float humidityDht;
   float temperatureDht;
   float luminosidade;
-  float temperatureBmp;
-  float pressureBmp;
-  float altitudeBmp;
+  float temperatureBme;
+  float humidityBme;
+  float pressureBme;
+  float altitudeBme;
   float mediaContagemMin;
   int valorAnalogico;
   int percentualUV;
@@ -136,9 +137,9 @@ void setupSensors() {
   dht.begin();                      // Inicializa o sensor DHT22
   pinMode(PIN_PLUVIOMETRO, INPUT);  // Iniciação Pluviometro
 
-  // Inicializa o BMP280 com o endereço I2C 0x76
+  // Inicializa o BME280 com o endereço I2C 0x76
   TCA9548A(3);
-  if (!bmp.begin(0x76)) Serial.println(F("Sensor BMP280 não foi identificado! Verifique as conexões.")); 
+  if (!bme.begin(0x76)) Serial.println(F("Sensor BME280 não foi identificado! Verifique as conexões.")); 
   
   TCA9548A(1);                          // Inicializa o sensor de luz BH1750
   Wire.beginTransmission(BH1750_ADDR);
@@ -212,9 +213,10 @@ SensorReadings readSensors() {
   readings.luminosidade = lerLuminosidade();
   readings.mediaContagemMin = contarMlPorMinuto();
   TCA9548A(3);
-  readings.temperatureBmp = bmp.readTemperature();
-  readings.pressureBmp = bmp.readPressure();
-  readings.altitudeBmp = bmp.readAltitude(1013.25);
+  readings.temperatureBme = bme.readTemperature();
+  readings.humidityBme = bme.readHumidity();
+  readings.pressureBme = bme.readPressure();
+  readings.altitudeBme = bme.readAltitude(1013.25);
   return readings;
 }
 
@@ -224,10 +226,10 @@ void displayReadings(SensorReadings readings) {
   UVSerial(readings.valorAnalogico, readings.percentualUV);
   DHT22Serial(readings.humidityDht, readings.temperatureDht);
   pluviometroSerial(readings.mediaContagemMin);
-  BMP280Serial(readings.temperatureBmp, readings.pressureBmp, readings.altitudeBmp);
+  BME280Serial(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
 
   limpaResultado();
-  if(botaoAcionado % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBmp, readings.humidityDht, readings.pressureBmp, readings.altitudeBmp);
+  if(botaoAcionado % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
   if(botaoAcionado % 2 == 1) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
 }
 
@@ -281,11 +283,11 @@ String createJsonPayload(SensorReadings readings) {
   doc["idEstacao"] = "Teste Principal";
   doc["timestamp"] = getFormattedTimestamp();
   doc["numeroMedicao"] = 1;
-  doc["temperatura"] = readings.temperatureBmp;
+  doc["temperatura"] = readings.temperatureBme;
   doc["umidade"] = readings.humidityDht;
   doc["percentualUV"] = readings.percentualUV;
   doc["nivelUV"] = readings.valorAnalogico;
-  doc["pressao"] = readings.pressureBmp;
+  doc["pressao"] = readings.pressureBme;
   doc["luminosidade"] = readings.luminosidade;
   doc["mlChuva"] = readings.mediaContagemMin;
 
@@ -315,8 +317,9 @@ void luminosidadeSerial(float luminosidade) {
   }
 }
 
-void BMP280Serial(float temperature, float pressure, float altitude){
-  comumSerial("BMP280", "Temp", temperature, "°C", true, true, false);
+void BME280Serial(float temperature, float humidity, float pressure, float altitude){
+  comumSerial("BME280", "Temp", temperature, "°C", true, true, false);
+  comumSerial("", "Umidade", humidity, "%", true, false, false);
   comumSerial("", "Pressão", pressure, "Pa (Pascal)", true, false, false);
   comumSerial("", "Altitude aprox.", altitude, "m (Metros)", true, false, true);
 }
