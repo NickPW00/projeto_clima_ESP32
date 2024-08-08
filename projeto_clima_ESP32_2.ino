@@ -3,7 +3,6 @@
 #include <Adafruit_I2CDevice.h>
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
-#include <DHT.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
@@ -24,11 +23,9 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 
 // Definições de cores
 #define BLACK    0x0000
-#define BLUE     0x001F
 #define RED      0xF800
 #define GREEN    0x07E0
 #define CYAN     0x07FF
-#define MAGENTA  0xF81F
 #define YELLOW   0xFFE0 
 #define WHITE    0xFFFF
 
@@ -40,11 +37,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 // Sensor Pins
 #define BH1750_ADDR 0x23   // Light Sensor Address
 #define pinSensorUV 13     // UV Sensor Pin
-#define DHTPIN 14          // DHT Sensor Pin
 #define PIN_PLUVIOMETRO 26 // Rain Gauge Pin
-
-//Sensor Types
-#define DHTTYPE DHT22   
 
 // Rain Gauge Configuration
 #define MEDIDA_BASCULA 7.54   // 7.54ml each time it's activated, 9cm diameter, 4.5cm radius, 63,585 cm2 , 0,118521 L/m2
@@ -58,7 +51,6 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 
 // Object Declarations
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST); // Display 
-DHT dht(DHTPIN, DHTTYPE);                                       // DHT22 Sensor
 Adafruit_BME280 bme;                                            // BME280 Sensor
 
 // Valiables Declarations
@@ -74,8 +66,6 @@ void TCA9548A(uint8_t id) {
 }
 
 struct SensorReadings {
-  float humidityDht;
-  float temperatureDht;
   float luminosidade;
   float temperatureBme;
   float humidityBme;
@@ -91,16 +81,16 @@ void setupWiFi();
 void setupDisplay();
 void setupSensors();
 void print_wakeup_reason();
-void displayReadings(SensorReadings readings);
+void serialOutputs(SensorReadings readings);
+void displayOutputs(SensorReadings readings);
 void sendReadingsToServer(SensorReadings readings);
 String createJsonPayload(SensorReadings readings);
 SensorReadings readSensors();
 
-// botão
+// Botão para troca das telas
 int buttonPin = 25;
-int botaoAcionado = 0;
-int buttonState = 0;       // Variável para armazenar o estado do botão
-bool functionExecuted = false;  // Variável de controle para verificar se a função já foi executada
+int botaoAcionado = 0;      // Variavel para declarar qual 
+int buttonState;
 
 void setup() {
   Serial.begin(115200);
@@ -134,18 +124,19 @@ void setupDisplay(){
 
 void setupSensors() {
   Wire.begin();                     // Inicialização de todos os sensores que utilizam Wire
-  dht.begin();                      // Inicializa o sensor DHT22
   pinMode(PIN_PLUVIOMETRO, INPUT);  // Iniciação Pluviometro
 
   // Inicializa o BME280 com o endereço I2C 0x76
   TCA9548A(3);
   if (!bme.begin(0x76)) Serial.println(F("Sensor BME280 não foi identificado! Verifique as conexões.")); 
   
-  TCA9548A(1);                          // Inicializa o sensor de luz BH1750
+  TCA9548A(2);                          // Inicializa o sensor de luz BH1750
   Wire.beginTransmission(BH1750_ADDR);
   Wire.write(0x10);                     // Inicia medição com modo de alta resolução
   Wire.endTransmission();
 }
+
+// Deep Sleep Mode //////////////////////////////////////////////////
 
 void setupDeepSleep() {
   ++bootCount;
@@ -168,23 +159,26 @@ void print_wakeup_reason() {
   }
 }
 
+// Loop /////////////////////////////////////////////////////// 
+
 unsigned long ultimoIntervaloGeral = 0; 
 unsigned long ultimoIntervaloRequisicao = 0; 
 
-// Pluviometro
-int contagemGeral = 0; // A soma de quantas vezes foi lida a passagem do Basculante
+int contagemGeralBasculas = 0; // A soma de quantas vezes foi lida a passagem do Basculante
 int ultimaContagemGeral = 0;
 int contagemSec = 0; 
-bool reedSwitchAtivado = false;
 
 void loop() {
   buttonState = digitalRead(buttonPin);  // Lê o estado do botão
-  int valorDigital = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
-  modificarContagem(valorDigital); // Sempre verifica caso o pluviometro for acionado
+  int valorDigitalPluviometro = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
+  modificarContagem(valorDigitalPluviometro); // Sempre verifica caso o pluviometro for acionado
 
+  if(buttonState == HIGH) botaoAcionado++;
   if(millis() - ultimoIntervaloGeral > 1000){
     SensorReadings readings = readSensors();
-    displayReadings(readings);
+    serialOutputs(readings);
+    displayOutputs(readings);
+    
     if(millis() - ultimoIntervaloRequisicao > 90000){
       sendReadingsToServer(readings);
       ultimoIntervaloRequisicao = millis();
@@ -195,19 +189,12 @@ void loop() {
     contagemSec = 0;
     ultimoIntervaloGeral = millis();
   }
-
-  if (buttonState == HIGH && !functionExecuted) { // Se o botão for pressionado e a função não foi executada
-    botaoAcionado++;
-    functionExecuted = true;  // Marca que a função foi executada
-  }
-  else functionExecuted = false;
 }
 
+// Mandando para a API /////////////////////////////////////////////////////// 
 
 SensorReadings readSensors() {
   SensorReadings readings;
-  readings.humidityDht = dht.readHumidity();
-  readings.temperatureDht = dht.readTemperature();
   readings.valorAnalogico = analogRead(pinSensorUV);
   readings.percentualUV = map(readings.valorAnalogico, 0, 1023, 0, 100);
   readings.luminosidade = lerLuminosidade();
@@ -218,50 +205,6 @@ SensorReadings readSensors() {
   readings.pressureBme = bme.readPressure();
   readings.altitudeBme = bme.readAltitude(1013.25);
   return readings;
-}
-
-void displayReadings(SensorReadings readings) {
-  Serial.println("------------------------------");
-  luminosidadeSerial(readings.luminosidade);
-  UVSerial(readings.valorAnalogico, readings.percentualUV);
-  DHT22Serial(readings.humidityDht, readings.temperatureDht);
-  pluviometroSerial(readings.mediaContagemMin);
-  BME280Serial(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
-
-  limpaResultado();
-  if(botaoAcionado % 2 == 0) desenhaPrimeiraPagina(readings.temperatureDht, readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
-  if(botaoAcionado % 2 == 1) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
-}
-
-void serialSendReadingsToServer(int httpResponseCode, HTTPClient &http){
-  if (httpResponseCode > 0) {
-      Serial.print("Código de Resposta HTTP: ");
-      Serial.println(httpResponseCode);
-      String payload = http.getString();
-      Serial.println("Resposta do servidor:");
-      Serial.println(payload);
-    } else {
-      Serial.print("Erro na solicitação HTTP: ");
-      Serial.println(httpResponseCode);
-    }
-}
-
-void sendReadingsToServer(SensorReadings readings) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverName);
-    http.addHeader("Content-Type", "application/json");
-
-    String httpRequestData = createJsonPayload(readings);
-
-    int httpResponseCode = http.POST(httpRequestData);
-
-    serialSendReadingsToServer(httpResponseCode, http);
-    
-    http.end();
-  } else {
-    Serial.println("Desconectado do WiFi");
-  }
 }
 
 String getFormattedTimestamp() {
@@ -284,7 +227,7 @@ String createJsonPayload(SensorReadings readings) {
   doc["timestamp"] = getFormattedTimestamp();
   doc["numeroMedicao"] = 1;
   doc["temperatura"] = readings.temperatureBme;
-  doc["umidade"] = readings.humidityDht;
+  doc["umidade"] = readings.humidityBme;
   doc["percentualUV"] = readings.percentualUV;
   doc["nivelUV"] = readings.valorAnalogico;
   doc["pressao"] = readings.pressureBme;
@@ -297,13 +240,56 @@ String createJsonPayload(SensorReadings readings) {
   return jsonString;
 }
 
-void DHT22Serial(float humidity, float temperature){
-  if (isnan(humidity) || isnan(temperature)) 
-    Serial.println("Erro ao ler o sensor DHT22!");
-  else {
-    comumSerial("DHT22", "Umidade", humidity, "%", true, true, false);
-    comumSerial("", "Temperature", temperature, "°C", true, false, true);
+void sendReadingsToServer(SensorReadings readings) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(serverName);
+    http.addHeader("Content-Type", "application/json");
+    String httpRequestData = createJsonPayload(readings);
+    int httpResponseCode = http.POST(httpRequestData);
+    serialSendReadingsToServer(httpResponseCode, http);
+    http.end();
+  } else {
+    Serial.println("Desconectado do WiFi");
   }
+}
+
+void serialSendReadingsToServer(int httpResponseCode, HTTPClient &http){
+  if (httpResponseCode > 0) {
+      Serial.print("Código de Resposta HTTP: ");
+      Serial.println(httpResponseCode);
+      String payload = http.getString();
+      Serial.println("Resposta do servidor:");
+      Serial.println(payload);
+    } else {
+      Serial.print("Erro na solicitação HTTP: ");
+      Serial.println(httpResponseCode);
+    }
+}
+
+// PreSets /////////////////////////////////////////////////////// 
+
+float lerLuminosidade() {
+  TCA9548A(2);
+  Wire.requestFrom(BH1750_ADDR, 2);
+  if (Wire.available() >= 2) {
+      uint16_t valor = Wire.read() << 8 | Wire.read();
+      float luminosidade = valor / 1.2; 
+      return luminosidade;
+  } else {
+      Serial.println("Erro ao ler o sensor BH1750");
+      return -1.0; 
+  }
+}
+
+// Seriais /////////////////////////////////////////////////////// 
+
+void serialOutputs(SensorReadings readings) {
+  Serial.println("------------------------------");
+  luminosidadeSerial(readings.luminosidade);
+  UVSerial(readings.valorAnalogico, readings.percentualUV);
+  pluviometroSerial(readings.mediaContagemMin);
+  BME280Serial(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
 }
 
 void UVSerial(int valorAnalogico, int percentualUV){
@@ -324,6 +310,17 @@ void BME280Serial(float temperature, float humidity, float pressure, float altit
   comumSerial("", "Altitude aprox.", altitude, "m (Metros)", true, false, true);
 }
 
+void pluviometroSerial(float mediaContagemMin) {
+  double mlTotais = contagemGeralBasculas * MEDIDA_BASCULA;
+  double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
+  float mmTotais = mmPorM2();
+
+  comumSerial("Pluviometro", "Basculas", contagemGeralBasculas, "", false, true, false);
+  comumSerial("", "ml Totais", mlTotais, "ml", true, false, false);
+  comumSerial("", "L/m2 Totais", mmTotais, "L/m2", true, false, false);
+  comumSerial("", "Basculas por sec", contagemSec, "", false, false, true);
+}
+
 void comumSerial(const char* nomeSensor, const char* nomeMedida, float medida, const char* sinalMedida, bool temSinal, bool ehPrimeiro, bool ehUltimo) {
   if (ehPrimeiro) {
     Serial.print(nomeSensor);
@@ -334,67 +331,22 @@ void comumSerial(const char* nomeSensor, const char* nomeMedida, float medida, c
   Serial.print(F(": "));
   Serial.print(medida);
 
-  if (temSinal) {
-    Serial.print(sinalMedida);
-  }
-
-  if (ehUltimo) {
-    Serial.println();
-  } else {
-    Serial.print(F(" | "));
-  }
+  if (temSinal) Serial.print(sinalMedida);
+  if (ehUltimo) Serial.println();
+  else          Serial.print(F(" | "));
 }
 
-void pluviometroSerial(float mediaContagemMin) {
-  double mlTotais = contagemGeral * MEDIDA_BASCULA;
-  double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
-  float mmTotais = mmPorM2();
+// Pluviometro /////////////////////////////////////////////////////// 
 
-  comumSerial("Pluviometro", "Basculas", contagemGeral, "", false, true, false);
-  comumSerial("", "ml Totais", mlTotais, "ml", true, false, false);
-  comumSerial("", "L/m2 Totais", mmTotais, "L/m2", true, false, false);
-  comumSerial("", "Basculas por sec", contagemSec, "", false, false, true);
-}
-
-float lerLuminosidade() {
-  TCA9548A(1);
-  Wire.requestFrom(BH1750_ADDR, 2);
-  if (Wire.available() >= 2) {
-      uint16_t valor = Wire.read() << 8 | Wire.read();
-      float luminosidade = valor / 1.2; 
-      return luminosidade;
-  } else {
-      Serial.println("Erro ao ler o sensor BH1750");
-      return -1.0; 
-  }
-}
-
-// Pluviometro /////////////////////////////////////////////////////////////////
+bool reedSwitchAtivado = true;
 unsigned long intervalo2 = 0;
+
 void modificarContagem(int valorDigital) {
-  if (valorDigital == LOW && reedSwitchAtivado == false) {
-    Serial.println("Caso 1.2");
-    contagemSegura();
+  if (valorDigital == HIGH && millis() - intervalo2 > 500){
+    contagemGeralBasculas++;
+    contagemSec++;
     intervalo2 = millis();
-  } else if (valorDigital == HIGH) {
-    reedSwitchAtivado = false;
   }
-}
-
-// Função para garantir uma contagem segura, evitando duplicações
-void contagemSegura() {
-  if (contagemGeral == ultimaContagemGeral) {
-    somasContagem();
-  } else {
-    ultimaContagemGeral = contagemGeral;
-  }
-  reedSwitchAtivado = true;
-}
-
-// Função para somar as contagens
-void somasContagem() {
-  contagemGeral++;
-  contagemSec++;
 }
 
 // Função para calcular a média de ml por minuto
@@ -402,22 +354,27 @@ float contarMlPorMinuto() {
   float soma = 0;
   listaDeContagemSec[indiceInsercao] = contagemSec;
   indiceInsercao = (indiceInsercao + 1) % TAMANHO_LISTA;
-
   for (int i = 0; i < TAMANHO_LISTA; i++) {
     soma += listaDeContagemSec[i];
   }
-
   contagemSec = 0; // Reset contagemSec depois de calcular a média
-
   return soma / TAMANHO_LISTA;
 }
 
 // Função para calcular a quantidade de chuva em mm por m²
 float mmPorM2() {
   float mmPorM2 = MEDIDA_BASCULA / AREA_PLUVIOMETRO;
-  return contagemGeral * mmPorM2;
+  return contagemGeralBasculas * mmPorM2;
 }
-///////////////////////////////////////////////////////////////////////////////////////////////
+
+// Display - Opcional /////////////////////////////////////////////////////////////////////////////////////////////
+
+void displayOutputs(SensorReadings readings) {
+  bool condicaoBotao = botaoAcionado % 2;
+  limpaResultado();
+  if(!condicaoBotao) desenhaPrimeiraPagina(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
+  if(condicaoBotao) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
+}
 
 void limpaResultado() {
     tft.fillRoundRect(11, 11, 103, 103, 10, BLACK);
@@ -426,8 +383,8 @@ void limpaResultado() {
     tft.fillRoundRect(11, 125, 103, 103, 10, BLACK);
 }
 
-void desenhaPrimeiraPagina(float temperature1, float temperature2, float humidity, float pressure, float altitude) {
-  drawSensorData("Temp.:", temperature2 > 100 ? temperature1 : temperature2, "C", 1, false);
+void desenhaPrimeiraPagina(float temperature, float humidity, float pressure, float altitude) {
+  drawSensorData("Temp.:", temperature, "C", 1, false);
   drawSensorData("Hum.:", humidity, "%", 2, false);
   drawSensorData("Alt.:", altitude, "m", 3, false);
   drawSensorData("Press.:", pressure, "Pa", 4, true);
@@ -436,7 +393,7 @@ void desenhaPrimeiraPagina(float temperature1, float temperature2, float humidit
 void desenhaSegundaPagina(float luminosidade, float valorAnalogico, float percentualUV, float mediaContagemMin) {
   drawSensorData("Lum.:", luminosidade, "lux", 1, true);
   drawSensorData("UV.:", percentualUV, "%", 2, false);
-  drawSensorData("Bas.:", contagemGeral * MEDIDA_BASCULA, "ml", 3, false);
+  drawSensorData("Bas.:", contagemGeralBasculas * MEDIDA_BASCULA, "ml", 3, false);
   drawSensorData("ML/Min.:", mediaContagemMin, "ml/min", 4, true);
 }
 
