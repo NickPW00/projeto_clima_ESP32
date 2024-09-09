@@ -34,10 +34,23 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", -10800, 60000);
 #define TFT_DC    2  
 #define TFT_RST   4  
 
-// Sensor Pins
+// Multiplexer CD74HC4067 Configuration
+#define S0 27 // Pino de Seleção
+#define S1 26 // Pino de Seleção
+#define S2 25 // Pino de Seleção
+#define S3 33 // Pino de Seleção
+#define SIG 32 // Pino de Informações
+
+// Sensor de Particula suspensa no ar - No Multiplexador CD74HC4067
+#define PIN_PM_25 5
+#define PIN_PM_1 19
+#define SAMPLE_TIME 5000
+
+// Sensor Pins 
 #define BH1750_ADDR 0x23   // Light Sensor Address
-#define pinSensorUV 13     // UV Sensor Pin
-#define PIN_PLUVIOMETRO 26 // Rain Gauge Pin
+#define PIN_SENSOR_UV 2     // UV Sensor Pin - No Multiplexador CD74HC4067
+#define PIN_PLUVIOMETRO 1 // Rain Gauge Pin - No Multiplexador CD74HC4067
+/* #define BUTTON_PIN 6 // Button - No Multiplexador CD74HC4067 */
 
 // Rain Gauge Configuration
 #define MEDIDA_BASCULA 7.54   // 7.54ml each time it's activated, 9cm diameter, 4.5cm radius, 63,585 cm2 , 0,118521 L/m2
@@ -58,6 +71,15 @@ int listaDeContagemSec[TAMANHO_LISTA]; // Lista de Contagem de quantas mediçõe
 int indiceInsercao = 0;                // Qual espaço do array de contagem que será preenchida e lida consecutiva
 RTC_DATA_ATTR int bootCount = 0;
 
+// Configurações Termistor NTC 10k
+const int thermistorPin = 0; // Pino ADC conectado ao termistor
+const double seriesResistor = 10000.0; // Resistência em série com o termistor (10k ohms)
+const double nominalResistance = 10000.0; // Resistência nominal do termistor (10k ohms a 25°C)
+const double nominalTemperature = 25.0; // Temperatura nominal do termistor (25°C)
+const double bCoefficient = 3950.0; // Coeficiente B do termistor
+const int adcMaxValue = 4095; // Valor máximo do ADC (4095 para ESP32 e 1023 para ESP8266)
+const double vcc = 3.3; // Tensão de referência (3.3V para ESP32/ESP8266)
+
 // Complexador 
 void TCA9548A(uint8_t id) {
     Wire.beginTransmission(0x70); // A0= LOW; A1= LOW; A2= LOW
@@ -67,12 +89,13 @@ void TCA9548A(uint8_t id) {
 
 struct SensorReadings {
   float luminosidade;
+  float temperatureTermistor; // Adicionar ao Json
   float temperatureBme;
   float humidityBme;
   float pressureBme;
   float altitudeBme;
-  float mediaContagemMin;
-  int valorAnalogico;
+  float mediaContagemMinPluviometro;
+  int valorAnalogicoUV;
   int percentualUV;
 };
 
@@ -87,16 +110,10 @@ void sendReadingsToServer(SensorReadings readings);
 String createJsonPayload(SensorReadings readings);
 SensorReadings readSensors();
 
-// Botão para troca das telas
-int buttonPin = 25;
-int botaoAcionado = 0;      // Variavel para declarar qual 
-int buttonState;
-
 void setup() {
   Serial.begin(115200);
   delay(1000); // Deixa a estação acordar direitinho :D
   setupDeepSleep();
-  pinMode(buttonPin, INPUT); // botão
   setupWiFi();
   setupDisplay();
   setupSensors();
@@ -124,7 +141,15 @@ void setupDisplay(){
 
 void setupSensors() {
   Wire.begin();                     // Inicialização de todos os sensores que utilizam Wire
-  pinMode(PIN_PLUVIOMETRO, INPUT);  // Iniciação Pluviometro
+
+  // Configura os pinos de seleção como saída
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+
+  // Configura o pino SIG como entrada
+  pinMode(SIG, INPUT);
 
   // Inicializa o BME280 com o endereço I2C 0x76
   TCA9548A(3);
@@ -161,33 +186,34 @@ void print_wakeup_reason() {
 
 // Loop /////////////////////////////////////////////////////// 
 
-unsigned long ultimoIntervaloGeral = 0; 
+unsigned long ultimoIntervaloLoop = 0; 
 unsigned long ultimoIntervaloRequisicao = 0; 
 
 int contagemGeralBasculas = 0; // A soma de quantas vezes foi lida a passagem do Basculante
 int ultimaContagemGeral = 0;
 int contagemSec = 0; 
 
-void loop() {
-  buttonState = digitalRead(buttonPin);  // Lê o estado do botão
-  int valorDigitalPluviometro = digitalRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
-  modificarContagem(valorDigitalPluviometro); // Sempre verifica caso o pluviometro for acionado
+int botaoAcionado = 0;  // Variavel para declarar qual tela
 
-  if(buttonState == HIGH) botaoAcionado++;
-  if(millis() - ultimoIntervaloGeral > 1000){
+void loop() { 
+  int valorDigitalPluviometro = analogRead(PIN_PLUVIOMETRO); // Ele sempre será 1, e só será 0 quando o imã se aproximar no Reed Switch
+  modificarContagem(valorDigitalPluviometro); // Sempre verifica caso o pluviometro for acionado
+  botaoAcionado++;
+
+  if(millis() - ultimoIntervaloLoop > 1000){
     SensorReadings readings = readSensors();
     serialOutputs(readings);
     displayOutputs(readings);
-    
+    contagemSec = 0;
+    botaoAcionado++;
+    ultimoIntervaloLoop = millis();
     if(millis() - ultimoIntervaloRequisicao > 90000){
-      sendReadingsToServer(readings);
       ultimoIntervaloRequisicao = millis();
+      sendReadingsToServer(readings);
       Serial.println("Going to sleep now");
       Serial.flush();
       esp_deep_sleep_start();
     }
-    contagemSec = 0;
-    ultimoIntervaloGeral = millis();
   }
 }
 
@@ -195,10 +221,11 @@ void loop() {
 
 SensorReadings readSensors() {
   SensorReadings readings;
-  readings.valorAnalogico = analogRead(pinSensorUV);
-  readings.percentualUV = map(readings.valorAnalogico, 0, 1023, 0, 100);
+  readings.valorAnalogicoUV = analogRead(PIN_SENSOR_UV);
+  readings.percentualUV = map(readings.valorAnalogicoUV, 0, 1023, 0, 100);
   readings.luminosidade = lerLuminosidade();
-  readings.mediaContagemMin = contarMlPorMinuto();
+  readings.mediaContagemMinPluviometro = contarMlPorMinuto();
+  readings.temperatureTermistor = readTermistor();
   TCA9548A(3);
   readings.temperatureBme = bme.readTemperature();
   readings.humidityBme = bme.readHumidity();
@@ -229,10 +256,11 @@ String createJsonPayload(SensorReadings readings) {
   doc["temperatura"] = readings.temperatureBme;
   doc["umidade"] = readings.humidityBme;
   doc["percentualUV"] = readings.percentualUV;
-  doc["nivelUV"] = readings.valorAnalogico;
+  doc["nivelUV"] = readings.valorAnalogicoUV;
   doc["pressao"] = readings.pressureBme;
   doc["luminosidade"] = readings.luminosidade;
-  doc["mlChuva"] = readings.mediaContagemMin;
+  doc["mlChuva"] = readings.mediaContagemMinPluviometro;
+  // doc["temperatura2"] = readings.temperatureTermistor; Decidindo o que fazer com esse rapaz
 
   // Convertendo o objeto JSON em uma string
   String jsonString;
@@ -282,14 +310,62 @@ float lerLuminosidade() {
   }
 }
 
+float readTermistor() {
+  int adcValue = analogRead(thermistorPin); // Leitura do ADC
+  double voltage = adcValue * vcc / adcMaxValue; // Converte ADC para tensão
+  double resistance = seriesResistor * (vcc / voltage - 1.0); // Calcula a resistência do termistor
+
+  // Fórmula de Steinhart-Hart para calcular a temperatura
+  double steinhart;
+  steinhart = resistance / nominalResistance; // (R/R0)
+  steinhart = log(steinhart); // ln(R/R0)
+  steinhart /= bCoefficient; // 1/B * ln(R/R0)
+  steinhart += 1.0 / (nominalTemperature + 273.15); // + (1/T0)
+  steinhart = 1.0 / steinhart; // Inverte para obter T em Kelvin
+  double temperatureC = steinhart - 273.15; // Converte Kelvin para Celsius
+  return temperatureC;
+}
+
+// Pluviometro /////////////////////////////////////////////////////// 
+
+bool reedSwitchAtivado = true;
+unsigned long intervalo2 = 0;
+
+void modificarContagem(int valorDigital) {
+  if (valorDigital >= 2800 && millis() - intervalo2 > 500){
+    contagemGeralBasculas++;
+    contagemSec++;
+    intervalo2 = millis();
+  }
+}
+
+// Função para calcular a média de ml por minuto
+float contarMlPorMinuto() {
+  float soma = 0;
+  listaDeContagemSec[indiceInsercao] = contagemSec;
+  indiceInsercao = (indiceInsercao + 1) % TAMANHO_LISTA;
+  for (int i = 0; i < TAMANHO_LISTA; i++) {
+    soma += listaDeContagemSec[i];
+  }
+  contagemSec = 0; // Reset contagemSec depois de calcular a média
+  return soma / TAMANHO_LISTA;
+}
+
+// Função para calcular a quantidade de chuva em mm por m²
+float mmPorM2() {
+  float mmPorM2 = MEDIDA_BASCULA / AREA_PLUVIOMETRO; 
+  return contagemGeralBasculas * mmPorM2;
+}
+
 // Seriais /////////////////////////////////////////////////////// 
 
 void serialOutputs(SensorReadings readings) {
   Serial.println("------------------------------");
   luminosidadeSerial(readings.luminosidade);
-  UVSerial(readings.valorAnalogico, readings.percentualUV);
-  pluviometroSerial(readings.mediaContagemMin);
+  UVSerial(readings.valorAnalogicoUV, readings.percentualUV);
+  pluviometroSerial(readings.mediaContagemMinPluviometro);
   BME280Serial(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
+  comumSerial("Termistor", "Temperatura", readTermistor(), "°C", true, true, true);
 }
 
 void UVSerial(int valorAnalogico, int percentualUV){
@@ -310,9 +386,9 @@ void BME280Serial(float temperature, float humidity, float pressure, float altit
   comumSerial("", "Altitude aprox.", altitude, "m (Metros)", true, false, true);
 }
 
-void pluviometroSerial(float mediaContagemMin) {
+void pluviometroSerial(float mediaContagemMinPluviometro) {
   double mlTotais = contagemGeralBasculas * MEDIDA_BASCULA;
-  double mlMedioPorMin = mediaContagemMin * MEDIDA_BASCULA;
+  double mlMedioPorMin = mediaContagemMinPluviometro * MEDIDA_BASCULA;
   float mmTotais = mmPorM2();
 
   comumSerial("Pluviometro", "Basculas", contagemGeralBasculas, "", false, true, false);
@@ -336,44 +412,13 @@ void comumSerial(const char* nomeSensor, const char* nomeMedida, float medida, c
   else          Serial.print(F(" | "));
 }
 
-// Pluviometro /////////////////////////////////////////////////////// 
-
-bool reedSwitchAtivado = true;
-unsigned long intervalo2 = 0;
-
-void modificarContagem(int valorDigital) {
-  if (valorDigital == HIGH && millis() - intervalo2 > 500){
-    contagemGeralBasculas++;
-    contagemSec++;
-    intervalo2 = millis();
-  }
-}
-
-// Função para calcular a média de ml por minuto
-float contarMlPorMinuto() {
-  float soma = 0;
-  listaDeContagemSec[indiceInsercao] = contagemSec;
-  indiceInsercao = (indiceInsercao + 1) % TAMANHO_LISTA;
-  for (int i = 0; i < TAMANHO_LISTA; i++) {
-    soma += listaDeContagemSec[i];
-  }
-  contagemSec = 0; // Reset contagemSec depois de calcular a média
-  return soma / TAMANHO_LISTA;
-}
-
-// Função para calcular a quantidade de chuva em mm por m²
-float mmPorM2() {
-  float mmPorM2 = MEDIDA_BASCULA / AREA_PLUVIOMETRO;
-  return contagemGeralBasculas * mmPorM2;
-}
-
 // Display - Opcional /////////////////////////////////////////////////////////////////////////////////////////////
 
 void displayOutputs(SensorReadings readings) {
   bool condicaoBotao = botaoAcionado % 2;
   limpaResultado();
   if(!condicaoBotao) desenhaPrimeiraPagina(readings.temperatureBme, readings.humidityBme, readings.pressureBme, readings.altitudeBme);
-  if(condicaoBotao) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogico, readings.percentualUV, readings.mediaContagemMin);
+  if(condicaoBotao) desenhaSegundaPagina(readings.luminosidade, readings.valorAnalogicoUV, readings.percentualUV, readings.mediaContagemMinPluviometro);
 }
 
 void limpaResultado() {
@@ -390,11 +435,11 @@ void desenhaPrimeiraPagina(float temperature, float humidity, float pressure, fl
   drawSensorData("Press.:", pressure, "Pa", 4, true);
 }
 
-void desenhaSegundaPagina(float luminosidade, float valorAnalogico, float percentualUV, float mediaContagemMin) {
+void desenhaSegundaPagina(float luminosidade, float valorAnalogicoUV, float percentualUV, float mediaContagemMinPluviometro) {
   drawSensorData("Lum.:", luminosidade, "lux", 1, true);
   drawSensorData("UV.:", percentualUV, "%", 2, false);
   drawSensorData("Bas.:", contagemGeralBasculas * MEDIDA_BASCULA, "ml", 3, false);
-  drawSensorData("ML/Min.:", mediaContagemMin, "ml/min", 4, true);
+  drawSensorData("ML/Min.:", mediaContagemMinPluviometro, "ml/min", 4, true);
 }
 
 void drawSensorData(const char* sensorName, float sensorValue, const char* unit, int tela, bool ultrapassa) {
